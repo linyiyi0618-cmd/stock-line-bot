@@ -1,11 +1,13 @@
 import os, time, requests, json
+from urllib.parse import quote
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
     Configuration, ApiClient, MessagingApi,
     ReplyMessageRequest, PushMessageRequest,
-    TextMessage, FlexMessage, FlexContainer
+    TextMessage, FlexMessage, FlexContainer,
+    ImageMessage
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import threading, schedule
@@ -55,6 +57,29 @@ def fetch_yahoo(symbol):
     src = datetime.fromtimestamp(ts).strftime("%m/%d %H:%M")
     return {"price": price, "change": chg, "pct": pct, "name": name, "source": src}
 
+def fetch_history(stock_id):
+    """抓近30天收盤價，回傳 {dates, closes}"""
+    for suffix in [".TW", ".TWO"]:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?interval=1d&range=60d"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            r = requests.get(url, headers=headers, timeout=10)
+            data = r.json()
+            result = data["chart"]["result"]
+            if not result: continue
+            timestamps = result[0]["timestamp"]
+            closes     = result[0]["indicators"]["quote"][0]["close"]
+            dates, prices = [], []
+            for ts, c in zip(timestamps, closes):
+                if c is None: continue
+                dates.append(datetime.fromtimestamp(ts).strftime("%m/%d"))
+                prices.append(round(c, 2))
+            if dates:
+                return {"dates": dates[-30:], "closes": prices[-30:]}
+        except Exception as e:
+            print(f"[history] {stock_id}{suffix}: {e}")
+    return None
+
 def get_price(stock_id):
     for suffix, market in [(".TW", "上市"), (".TWO", "上櫃")]:
         try:
@@ -84,6 +109,57 @@ def is_trading():
     if now.weekday() >= 5: return False
     hm = now.hour * 60 + now.minute
     return 9*60 <= hm < 13*60+30
+
+# ── K線圖（QuickChart）────────────────────────────────
+def make_chart_url(stock_id, name, hist):
+    dates  = hist["dates"]
+    closes = hist["closes"]
+    up     = closes[-1] >= closes[0]
+    color  = "rgb(46,204,113)" if up else "rgb(231,76,60)"
+    fill   = "rgba(46,204,113,0.15)" if up else "rgba(231,76,60,0.15)"
+
+    chart_config = {
+        "type": "line",
+        "data": {
+            "labels": dates,
+            "datasets": [{
+                "label": f"{stock_id} {name}",
+                "data": closes,
+                "borderColor": color,
+                "backgroundColor": fill,
+                "borderWidth": 2,
+                "pointRadius": 0,
+                "fill": True,
+                "tension": 0.3
+            }]
+        },
+        "options": {
+            "plugins": {
+                "legend": {"display": True, "labels": {"color": "#FFFFFF", "font": {"size": 14}}},
+                "title": {
+                    "display": True,
+                    "text": f"{stock_id} {name}  近30日走勢",
+                    "color": "#FFFFFF",
+                    "font": {"size": 16}
+                }
+            },
+            "scales": {
+                "x": {
+                    "ticks": {"color": "#AAAAAA", "maxTicksLimit": 8},
+                    "grid": {"color": "rgba(255,255,255,0.08)"}
+                },
+                "y": {
+                    "ticks": {"color": "#AAAAAA"},
+                    "grid": {"color": "rgba(255,255,255,0.08)"}
+                }
+            },
+            "backgroundColor": "#1A1A2E"
+        }
+    }
+    config_str = json.dumps(chart_config, ensure_ascii=False)
+    encoded    = quote(config_str)
+    url = f"https://quickchart.io/chart?c={encoded}&width=800&height=400&backgroundColor=%231A1A2E"
+    return url
 
 # ── Flex Message 卡片 ─────────────────────────────────
 def make_flex_card(s):
@@ -160,7 +236,6 @@ def make_report_flex(stocks):
             ]
         })
         rows.append({"type": "separator", "color": "#EEEEEE"})
-
     bubble = {
         "type": "bubble",
         "header": {
@@ -178,33 +253,25 @@ def make_report_flex(stocks):
             "contents": rows[:-1]
         }
     }
-    return FlexMessage(
-        alt_text="自選股行情報告",
-        contents=FlexContainer.from_dict(bubble)
-    )
+    return FlexMessage(alt_text="自選股行情報告",
+                       contents=FlexContainer.from_dict(bubble))
 
 def make_watchlist_flex():
-    if not watchlist:
-        return None
+    if not watchlist: return None
     rows = []
     for sid in watchlist:
         rows.append({
             "type": "box", "layout": "horizontal",
-            "paddingAll": "10px", "paddingTop": "8px", "paddingBottom": "8px",
+            "paddingAll": "10px",
             "contents": [
                 {"type": "text", "text": sid, "size": "sm",
                  "weight": "bold", "flex": 1, "gravity": "center"},
-                {
-                    "type": "button",
-                    "action": {"type": "message", "label": "刪除",
-                               "text": f"刪除 {sid}"},
-                    "style": "secondary", "height": "sm", "flex": 1,
-                    "color": "#FF6B6B"
-                }
+                {"type": "button",
+                 "action": {"type": "message", "label": "刪除", "text": f"刪除 {sid}"},
+                 "style": "secondary", "height": "sm", "flex": 1, "color": "#FF6B6B"}
             ]
         })
         rows.append({"type": "separator", "color": "#EEEEEE"})
-
     bubble = {
         "type": "bubble",
         "header": {
@@ -224,16 +291,13 @@ def make_watchlist_flex():
         "footer": {
             "type": "box", "layout": "vertical", "paddingAll": "12px",
             "contents": [
-                {"type": "text",
-                 "text": "輸入「新增 2330」加入自選股",
+                {"type": "text", "text": "輸入「新增 2330」加入自選股",
                  "color": "#AAAAAA", "size": "xs", "align": "center"}
             ]
         }
     }
-    return FlexMessage(
-        alt_text=f"自選股清單（{len(watchlist)} 檔）",
-        contents=FlexContainer.from_dict(bubble)
-    )
+    return FlexMessage(alt_text=f"自選股清單（{len(watchlist)} 檔）",
+                       contents=FlexContainer.from_dict(bubble))
 
 # ── 警示 & 排程 ───────────────────────────────────────
 triggered_today = set()
@@ -258,8 +322,7 @@ def check_alerts():
 def daily_report():
     stocks = [get_price(sid) for sid in watchlist]
     stocks = [s for s in stocks if s]
-    if stocks:
-        push_flex(make_report_flex(stocks))
+    if stocks: push_flex(make_report_flex(stocks))
 
 def push_text(msg):
     with ApiClient(configuration) as api_client:
@@ -286,20 +349,17 @@ def callback():
 def handle_msg(event):
     text = event.message.text.strip()
 
-    # ── 特殊行情 ──
     if text in SPECIAL:
         s = get_special(text)
         if s: reply_flex(event, make_flex_card(s))
         else: reply_text(event, f"無法取得 {text} 資料")
 
-    # ── 自選股報告 ──
     elif text == "報告":
         stocks = [get_price(sid) for sid in watchlist]
         stocks = [s for s in stocks if s]
         if stocks: reply_flex(event, make_report_flex(stocks))
         else: reply_text(event, "無法取得資料")
 
-    # ── 查看自選股清單 ──
     elif text in ["自選股", "清單", "我的"]:
         if not watchlist:
             reply_text(event, "自選股是空的\n輸入「新增 2330」來加入")
@@ -307,7 +367,6 @@ def handle_msg(event):
             flex = make_watchlist_flex()
             if flex: reply_flex(event, flex)
 
-    # ── 新增自選股 ──
     elif text.startswith("新增 "):
         sid = text.replace("新增 ", "").strip().upper()
         if sid in watchlist:
@@ -320,7 +379,6 @@ def handle_msg(event):
             else:
                 reply_text(event, f"找不到 {sid}，請確認代號正確")
 
-    # ── 刪除自選股 ──
     elif text.startswith("刪除 "):
         sid = text.replace("刪除 ", "").strip().upper()
         if sid in watchlist:
@@ -329,17 +387,27 @@ def handle_msg(event):
         else:
             reply_text(event, f"⚠️ {sid} 不在自選股中")
 
-    # ── 網頁 ──
     elif text == "網頁":
         reply_text(event, f"📈 台股追蹤網頁\n{NETLIFY_URL}")
 
-    # ── 股票代號查詢 ──
+    # K線圖：輸入「K 2330」或「圖 2330」
+    elif text.startswith("K ") or text.startswith("圖 ") or text.startswith("k "):
+        sid = text.split(" ", 1)[1].strip().upper()
+        reply_text(event, f"📈 {sid} 圖表產生中，請稍候...")
+        hist = fetch_history(sid)
+        if hist:
+            s = get_price(sid)
+            name = s["name"] if s else sid
+            chart_url = make_chart_url(sid, name, hist)
+            reply_image(event, chart_url, chart_url)
+        else:
+            reply_text(event, f"無法取得 {sid} 歷史資料")
+
     elif len(text) >= 4 and len(text) <= 7 and text[0].isdigit() and text.replace("-","").isalnum():
         s = get_price(text)
         if s: reply_flex(event, make_flex_card(s))
         else: reply_text(event, f"找不到 {text}，請確認代號正確")
 
-    # ── 警示設定 ──
     elif text.startswith("警示 "):
         parts = text.split()
         if len(parts) == 3:
@@ -349,7 +417,6 @@ def handle_msg(event):
         else:
             reply_text(event, "格式：警示 2330 5")
 
-    # ── 指令說明 ──
     elif text in ["指令", "help", "選單"]:
         reply_text(event,
             "📋 指令說明\n"
@@ -360,8 +427,8 @@ def handle_msg(event):
             "• 刪除 2330 → 移除自選股\n"
             "• 報告 → 自選股即時行情\n\n"
             "【股票查詢】\n"
-            "• 2330 → 上市股票\n"
-            "• 009816 → 上櫃股票\n\n"
+            "• 2330 → 查詢股價\n"
+            "• K 2330 → 近30日K線圖\n\n"
             "【期貨/指數】\n"
             "• 台指期 / 加權 / 那斯達克\n"
             "• 道瓊 / 標普 / 費半\n"
@@ -375,6 +442,7 @@ def handle_msg(event):
     else:
         reply_text(event,
             "輸入股票代號查詢，例如：2330\n"
+            "輸入「K 2330」查看K線圖\n"
             "或輸入「指令」查看所有功能"
         )
 
@@ -390,6 +458,16 @@ def reply_flex(event, flex_msg):
         MessagingApi(api_client).reply_message(
             ReplyMessageRequest(reply_token=event.reply_token,
                                 messages=[flex_msg])
+        )
+
+def reply_image(event, image_url, preview_url):
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(reply_token=event.reply_token,
+                                messages=[ImageMessage(
+                                    original_content_url=image_url,
+                                    preview_image_url=preview_url
+                                )])
         )
 
 # ── 排程 ──────────────────────────────────────────────

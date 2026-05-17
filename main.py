@@ -22,27 +22,40 @@ handler = WebhookHandler(SECRET)
 watchlist = ["2330", "0050"]
 alerts = {}
 
-# ── 抓股價（Yahoo Finance 後端版，全天候可用）────────────
-def get_price(stock_id):
-    try:
-        symbol = f"{stock_id}.TW"
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=10)
-        data = r.json()
-        meta = data["chart"]["result"][0]["meta"]
-        price    = round(meta.get("regularMarketPrice", 0), 2)
-        prev     = round(meta.get("chartPreviousClose") or meta.get("previousClose", price), 2)
-        name     = meta.get("longName") or meta.get("shortName") or stock_id
-        chg      = round(price - prev, 2)
-        pct      = round((chg / prev) * 100, 2) if prev else 0
-        mkt_time = datetime.fromtimestamp(meta.get("regularMarketTime", time.time()))
-        source   = mkt_time.strftime("%m/%d %H:%M")
-        return {"id": stock_id, "name": name, "price": price,
-                "change": chg, "pct": pct, "source": source}
-    except Exception as e:
-        print(f"[get_price error] {stock_id}: {e}")
+# ── 抓股價（自動判斷上市/上櫃）──────────────────────────
+def fetch_yahoo(symbol):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers, timeout=10)
+    data = r.json()
+    result = data["chart"]["result"]
+    if not result:
         return None
+    meta  = result[0]["meta"]
+    price = round(meta.get("regularMarketPrice", 0), 2)
+    prev  = round(meta.get("chartPreviousClose") or meta.get("previousClose", price), 2)
+    name  = meta.get("longName") or meta.get("shortName") or symbol
+    if price <= 0:
+        return None
+    chg  = round(price - prev, 2)
+    pct  = round((chg / prev) * 100, 2) if prev else 0
+    ts   = meta.get("regularMarketTime", time.time())
+    src  = datetime.fromtimestamp(ts).strftime("%m/%d %H:%M")
+    return {"price": price, "change": chg, "pct": pct, "name": name, "source": src}
+
+def get_price(stock_id):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    # 嘗試上市（.TW）和上櫃（.TWO）
+    for suffix, market in [(".TW", "上市"), (".TWO", "上櫃")]:
+        try:
+            result = fetch_yahoo(f"{stock_id}{suffix}")
+            if result:
+                result["id"] = stock_id
+                result["market"] = market
+                return result
+        except Exception as e:
+            print(f"[{suffix}] {stock_id} error: {e}")
+    return None
 
 def is_trading():
     now = datetime.now()
@@ -115,12 +128,12 @@ def handle_msg(event):
     elif text == "網頁":
         reply(event, f"📈 台股追蹤網頁\n{NETLIFY_URL}")
 
-    elif text.isdigit() and len(text) == 4:
+    elif text.isdigit() and len(text) in [4, 5, 6]:
         s = get_price(text)
         if s:
             arrow = "🔺" if s["pct"] > 0 else "🔻"
             reply(event,
-                f"{arrow} {s['id']} {s['name']}\n"
+                f"{arrow} {s['id']} {s['name']} ({s.get('market','')})\n"
                 f"現價：{s['price']}\n"
                 f"漲跌：{s['change']:+.2f} ({s['pct']:+.2f}%)\n"
                 f"時間：{s.get('source','')}"
@@ -141,7 +154,8 @@ def handle_msg(event):
         reply(event,
             "📋 指令說明\n"
             "──────────\n"
-            "• 2330 → 查詢股價\n"
+            "• 2330 → 查詢上市股價\n"
+            "• 009816 → 查詢上櫃股價\n"
             "• 報告 → 自選股行情\n"
             "• 網頁 → 開啟追蹤網頁\n"
             "• 警示 2330 5 → 漲跌超過5%通知\n"
@@ -150,7 +164,9 @@ def handle_msg(event):
 
     else:
         reply(event,
-            "輸入股票代號查詢，例如：2330\n"
+            "輸入股票代號查詢，例如：\n"
+            "• 2330（上市）\n"
+            "• 009816（上櫃）\n"
             "或輸入「指令」查看所有功能"
         )
 

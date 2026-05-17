@@ -39,6 +39,35 @@ SPECIAL = {
 
 SEP = "─" * 20
 
+# ── 精選台股池（流動性佳，適合單沖）────────────────────
+STOCK_POOL = [
+    # 半導體
+    "2330","2454","2379","2303","2308","2317","2357","3711","2344","3034",
+    "2337","2351","2449","3533","6770","3661","2385","2376","2388","6415",
+    # 電子
+    "2382","2395","2392","2353","2356","2360","2365","2367","2369","2371",
+    "2372","2373","2374","2375","2377","2383","2387","2390","2393","2399",
+    # 金融
+    "2882","2881","2880","2886","2884","2885","2887","2888","2889","2891",
+    "2892","5880","2883","2890","2801","2809","2812","2820","5876","6005",
+    # 傳產/食品
+    "1301","1303","1326","1402","1216","1101","1102","1301","2002","2105",
+    "1314","1319","1321","1323","1325","1326","1402","1434","1440","1504",
+    # ETF
+    "0050","0056","006208","00878","00919","00929","00713","00720B","00687B","0052",
+    # 生技醫療
+    "4763","4726","1787","4174","6547","4174","6202","4968","6456","4743",
+    # 航運
+    "2603","2609","2615","2618","2609","2610","2606","2607","2608","2616",
+    # 其他熱門
+    "2912","2801","9904","9910","1590","2207","2204","2201","2105","2103",
+    "5871","5876","5880","6116","6121","6122","6125","6126","6127","6128",
+    "3008","3016","3019","3021","3022","3024","3025","3026","3027","3028",
+    "2408","2409","2412","2448","2456","2458","2459","2460","2461","2462",
+]
+# 去重
+STOCK_POOL = list(dict.fromkeys(STOCK_POOL))
+
 # ── Yahoo Finance ─────────────────────────────────────
 def fetch_yahoo(symbol):
     url = "https://query1.finance.yahoo.com/v8/finance/chart/" + symbol + "?interval=1d&range=5d"
@@ -407,6 +436,94 @@ def handle_msg(event):
         else:
             reply_text(event, "⚠️ " + sid + " 不在自選股中")
 
+    elif text.startswith("昨日 ") or text.startswith("yesterday "):
+        sid = text.split(" ", 1)[1].strip().upper()
+        rows = fetch_history(sid)
+        if rows and len(rows) >= 2:
+            s_now = get_price(sid)
+            name = s_now["name"] if s_now else sid
+            last  = rows[-1]
+            prev  = rows[-2]
+            chg   = round(last["close"] - prev["close"], 2)
+            pct   = round((chg / prev["close"]) * 100, 2) if prev["close"] else 0
+            arrow = "▲" if pct > 0 else "▼"
+            sign  = "+" if pct > 0 else ""
+            avg_vol = round(sum([r["volume"] for r in rows[-21:-1]]) / 20) if len(rows) >= 21 else 0
+            vol_ratio = round(last["volume"] / avg_vol, 1) if avg_vol > 0 else 0
+            parts = [
+                "📅 " + sid + " " + name + " 昨日行情",
+                SEP,
+                "日期：" + last["date"],
+                "收盤：" + str(last["close"]),
+                "漲跌：" + arrow + " " + sign + str(chg) + " (" + sign + str(pct) + "%)",
+                "開盤：" + str(last["open"]),
+                "最高：" + str(last["high"]),
+                SEP,
+                "成交量：" + "{:,}".format(last["volume"]) + " 張",
+                "均量(20日)：" + "{:,}".format(avg_vol) + " 張",
+                "量比：" + str(vol_ratio) + "x",
+                SEP,
+                "前日收盤：" + str(prev["close"])
+            ]
+            reply_text(event, "\n".join(parts))
+        else:
+            reply_text(event, "找不到 " + sid + " 歷史資料")
+
+    elif text.startswith("昨日 "):
+        sid = text.split(" ", 1)[1].strip().upper()
+        rows = fetch_history(sid)
+        if rows and len(rows) >= 2:
+            s_now = get_price(sid)
+            name = s_now["name"] if s_now else sid
+            last  = rows[-1]
+            prev  = rows[-2]
+            chg   = round(last["close"] - prev["close"], 2)
+            pct   = round((chg / prev["close"]) * 100, 2) if prev["close"] else 0
+            arrow = "▲" if pct > 0 else "▼"
+            sign  = "+" if pct > 0 else ""
+            avg_vol = round(sum([r["volume"] for r in rows[-21:-1]]) / 20) if len(rows) >= 21 else 0
+            vol_ratio = round(last["volume"] / avg_vol, 1) if avg_vol > 0 else 0
+            parts = [
+                "📅 " + sid + " " + name + " 昨日行情",
+                SEP,
+                "日期：" + last["date"],
+                "收盤：" + str(last["close"]),
+                "漲跌：" + arrow + " " + sign + str(chg) + " (" + sign + str(pct) + "%)",
+                "開盤：" + str(last["open"]),
+                "最高：" + str(last["high"]),
+                SEP,
+                "成交量：" + "{:,}".format(last["volume"]) + " 張",
+                "均量(20日)：" + "{:,}".format(avg_vol) + " 張",
+                "量比：" + str(vol_ratio) + "x",
+                SEP,
+                "前日收盤：" + str(prev["close"])
+            ]
+            reply_text(event, "\n".join(parts))
+        else:
+            reply_text(event, "找不到 " + sid + " 歷史資料")
+
+    elif text in ["昨日", "昨天"]:
+        if not watchlist:
+            reply_text(event, "自選股是空的，請先新增股票")
+        else:
+            lines_out = ["📅 自選股昨日收盤", SEP]
+            last_date = ""
+            for sid in watchlist:
+                rows = fetch_history(sid)
+                if not rows or len(rows) < 2: continue
+                last = rows[-1]; prev = rows[-2]
+                last_date = last["date"]
+                chg = round(last["close"] - prev["close"], 2)
+                pct = round((chg / prev["close"]) * 100, 2) if prev["close"] else 0
+                arrow = "▲" if pct > 0 else "▼"
+                sign  = "+" if pct > 0 else ""
+                nd = get_price(sid)
+                name = nd["name"] if nd else sid
+                lines_out.append(arrow + " " + sid + " " + name)
+                lines_out.append("   " + str(last["close"]) + "　" + sign + str(chg) + " (" + sign + str(pct) + "%)")
+            lines_out.extend([SEP, "資料日期：" + last_date])
+            reply_text(event, "\n".join(lines_out))
+
     elif text == "網頁":
         reply_text(event, "📈 台股追蹤網頁\n" + NETLIFY_URL)
 
@@ -568,9 +685,45 @@ def reply_image(event, image_url, preview_url):
                                     preview_image_url=preview_url)]))
 
 # ── 排程 ──────────────────────────────────────────────
+def auto_screen():
+    """每日收盤後自動推播選股結果"""
+    results = screen_stocks(STOCK_POOL)
+    lines = [
+        "📋 明日潛力選股",
+        datetime.now().strftime("%m/%d") + " 自動推播",
+        "掃描 " + str(len(STOCK_POOL)) + " 檔台股",
+        SEP
+    ]
+    has_any = False
+    emoji_map = {"爆量": "🔥", "漲幅領先": "🚀", "突破均線": "📈", "高檔低收": "⭐"}
+    desc_map  = {
+        "爆量":    "成交量暴增（>均量3倍）",
+        "漲幅領先":"昨日漲跌超過±3%",
+        "突破均線":"突破MA5/MA20均線",
+        "高檔低收":"高檔低收（隔日續漲型）"
+    }
+    for strategy, stocks in results.items():
+        if not stocks: continue
+        has_any = True
+        lines.append("")
+        lines.append(emoji_map[strategy] + " " + strategy)
+        for s in stocks[:5]:
+            arrow = "▲" if s["pct"] > 0 else "▼"
+            extra = ""
+            if "vol_ratio" in s: extra = "  量比" + str(s["vol_ratio"]) + "x"
+            elif "broke" in s:   extra = "  突破" + s["broke"]
+            elif "tail" in s:    extra = "  上影" + str(s["tail"]) + "%"
+            lines.append("• " + s["id"] + " " + s["name"]
+                          + "  " + arrow + "{:+.2f}".format(s["pct"]) + "%" + extra)
+    if not has_any:
+        lines.extend(["今日無符合條件股票", "市場偏弱，注意風險"])
+    lines.extend(["", SEP, "⚠️ 僅供參考，請自行判斷"])
+    push_text("\n".join(lines))
+
 def run_schedule():
     schedule.every(15).seconds.do(check_alerts)
     schedule.every().day.at("13:35").do(daily_report)
+    schedule.every().day.at("14:00").do(auto_screen)  # 收盤後自動選股推播
     while True:
         schedule.run_pending()
         time.sleep(1)

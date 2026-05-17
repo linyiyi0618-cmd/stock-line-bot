@@ -591,41 +591,50 @@ def handle_msg(event):
             reply_text(event, "格式：算 買價 賣價 股數\n範例：算 100 105 3000")
 
     elif text in ["選股", "明日選股", "隔日選股", "明天買什麼", "推薦"]:
-        # 全市場掃描，不限時間，假日也能用
-        results = screen_stocks(STOCK_POOL)
-        last_trading = datetime.now().strftime("%m/%d")
-        lines = [
-            "📋 明日潛力選股",
-            last_trading + " 資料分析",
-            "掃描 " + str(len(STOCK_POOL)) + " 檔台股",
-            SEP
-        ]
-        has_any = False
-        emoji_map = {"爆量": "🔥", "漲幅領先": "🚀", "突破均線": "📈", "高檔低收": "⭐"}
-        desc_map  = {
-            "爆量":    "成交量暴增（>均量3倍）",
-            "漲幅領先":"漲跌超過±3%",
-            "突破均線":"突破MA5/MA20",
-            "高檔低收":"高檔低收續漲型"
-        }
-        for strategy, stocks in results.items():
-            if not stocks: continue
-            has_any = True
-            lines.append("")
-            lines.append(emoji_map[strategy] + " " + strategy + "｜" + desc_map[strategy])
-            for s in stocks[:5]:
-                arrow = "▲" if s["pct"] > 0 else "▼"
-                extra = ""
-                if "vol_ratio" in s: extra = "  量比" + str(s["vol_ratio"]) + "x"
-                elif "broke" in s:   extra = "  突破" + s["broke"]
-                elif "tail" in s:    extra = "  上影" + str(s["tail"]) + "%"
-                lines.append("• " + s["id"] + " " + s["name"]
-                              + "  " + arrow + "{:+.2f}".format(s["pct"]) + "%" + extra)
-        if not has_any:
-            lines.append("本次無符合條件股票")
-            lines.append("可能為假日或市場偏弱")
-        lines.extend(["", SEP, "⚠️ 僅供參考，請自行判斷"])
-        reply_text(event, "\n".join(lines))
+        # 先回覆「分析中」，避免 reply token 過期
+        user_id = event.source.user_id
+        reply_text(event, "🔍 掃描全市場中\n約需30秒，結果將自動推播給你...")
+        # 背景執行選股，完成後 push 結果
+        def do_screen():
+            results = screen_stocks(STOCK_POOL)
+            last_trading = datetime.now().strftime("%m/%d")
+            lines = [
+                "📋 明日潛力選股",
+                last_trading + " 資料分析",
+                "掃描 " + str(len(STOCK_POOL)) + " 檔",
+                SEP
+            ]
+            has_any = False
+            emoji_map = {"爆量": "🔥", "漲幅領先": "🚀", "突破均線": "📈", "高檔低收": "⭐"}
+            desc_map  = {
+                "爆量":    "成交量暴增（>均量3倍）",
+                "漲幅領先":"漲跌超過±3%",
+                "突破均線":"突破MA5/MA20",
+                "高檔低收":"高檔低收續漲型"
+            }
+            for strategy, stocks in results.items():
+                if not stocks: continue
+                has_any = True
+                lines.append("")
+                lines.append(emoji_map[strategy] + " " + strategy + "｜" + desc_map[strategy])
+                for s in stocks[:5]:
+                    arrow = "▲" if s["pct"] > 0 else "▼"
+                    extra = ""
+                    if "vol_ratio" in s: extra = "  量比" + str(s["vol_ratio"]) + "x"
+                    elif "broke" in s:   extra = "  突破" + s["broke"]
+                    elif "tail" in s:    extra = "  上影" + str(s["tail"]) + "%"
+                    lines.append("• " + s["id"] + " " + s["name"]
+                                  + "  " + arrow + "{:+.2f}".format(s["pct"]) + "%" + extra)
+            if not has_any:
+                lines.append("本次無符合條件股票")
+                lines.append("可能為假日或市場偏弱")
+            lines.extend(["", SEP, "⚠️ 僅供參考，請自行判斷"])
+            # 用 push 推播給使用者
+            with ApiClient(configuration) as api_client:
+                MessagingApi(api_client).push_message(
+                    PushMessageRequest(to=user_id, messages=[TextMessage(text="\n".join(lines))])
+                )
+        threading.Thread(target=do_screen, daemon=True).start()
 
     elif text in ["強勢", "弱勢", "強", "弱", "漲停", "跌停"]:
         want_strong = text in ["強勢", "強", "漲停"]

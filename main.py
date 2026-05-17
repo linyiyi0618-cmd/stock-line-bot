@@ -4,7 +4,8 @@ from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
     Configuration, ApiClient, MessagingApi,
-    ReplyMessageRequest, PushMessageRequest, TextMessage
+    ReplyMessageRequest, PushMessageRequest,
+    TextMessage, FlexMessage, FlexContainer
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import threading, schedule
@@ -22,41 +23,37 @@ handler = WebhookHandler(SECRET)
 watchlist = ["2330", "0050"]
 alerts = {}
 
-# ── 特殊代號對照表 ────────────────────────────────────
 SPECIAL = {
-    "台指期": "FITX=F",
-    "小台":   "FITX=F",
-    "那斯達克": "^IXIC",
-    "道瓊":   "^DJI",
-    "標普":   "^GSPC",
-    "費半":   "^SOX",
-    "黃金":   "GC=F",
-    "原油":   "CL=F",
-    "美元":   "DX-Y.NYB",
+    "台指期": ("FITX=F",  "期貨"),
+    "小台":   ("FITX=F",  "期貨"),
+    "那斯達克":("^IXIC",  "指數"),
+    "道瓊":   ("^DJI",   "指數"),
+    "標普":   ("^GSPC",  "指數"),
+    "費半":   ("^SOX",   "指數"),
+    "黃金":   ("GC=F",   "期貨"),
+    "原油":   ("CL=F",   "期貨"),
+    "美元":   ("DX-Y.NYB","指數"),
 }
 
-# ── 抓行情（通用）────────────────────────────────────
+# ── Yahoo Finance ─────────────────────────────────────
 def fetch_yahoo(symbol):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d"
     headers = {"User-Agent": "Mozilla/5.0"}
     r = requests.get(url, headers=headers, timeout=10)
     data = r.json()
     result = data["chart"]["result"]
-    if not result:
-        return None
+    if not result: return None
     meta  = result[0]["meta"]
     price = round(meta.get("regularMarketPrice", 0), 2)
     prev  = round(meta.get("chartPreviousClose") or meta.get("previousClose", price), 2)
     name  = meta.get("longName") or meta.get("shortName") or symbol
-    if price <= 0:
-        return None
+    if price <= 0: return None
     chg = round(price - prev, 2)
     pct = round((chg / prev) * 100, 2) if prev else 0
     ts  = meta.get("regularMarketTime", time.time())
     src = datetime.fromtimestamp(ts).strftime("%m/%d %H:%M")
     return {"price": price, "change": chg, "pct": pct, "name": name, "source": src}
 
-# ── 抓股價（上市/上櫃自動判斷）──────────────────────────
 def get_price(stock_id):
     for suffix, market in [(".TW", "上市"), (".TWO", "上櫃")]:
         try:
@@ -66,19 +63,19 @@ def get_price(stock_id):
                 result["market"] = market
                 return result
         except Exception as e:
-            print(f"[{suffix}] {stock_id} error: {e}")
+            print(f"[{suffix}] {stock_id}: {e}")
     return None
 
-# ── 抓期貨/指數行情 ───────────────────────────────────
-def get_futures(symbol, label):
+def get_special(keyword):
+    symbol, market = SPECIAL[keyword]
     try:
         result = fetch_yahoo(symbol)
         if result:
-            result["id"] = label
-            result["market"] = "期貨/指數"
+            result["id"] = keyword
+            result["market"] = market
             return result
     except Exception as e:
-        print(f"[futures] {symbol} error: {e}")
+        print(f"[special] {keyword}: {e}")
     return None
 
 def is_trading():
@@ -87,7 +84,201 @@ def is_trading():
     hm = now.hour * 60 + now.minute
     return 9*60 <= hm < 13*60+30
 
-# ── 警示檢查 ──────────────────────────────────────────
+# ── Flex Message 卡片 ─────────────────────────────────
+def make_flex_card(s):
+    up = s["pct"] >= 0
+    color = "#27AE60" if up else "#E74C3C"
+    bg    = "#F0FFF4" if up else "#FFF5F5"
+    arrow = "▲" if up else "▼"
+    sign  = "+" if up else ""
+
+    bubble = {
+        "type": "bubble",
+        "size": "kilo",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": color,
+            "paddingAll": "14px",
+            "contents": [
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": str(s["id"]),
+                            "color": "#FFFFFF",
+                            "size": "sm",
+                            "weight": "bold",
+                            "flex": 1
+                        },
+                        {
+                            "type": "text",
+                            "text": s.get("market", ""),
+                            "color": "#FFFFFF99",
+                            "size": "xs",
+                            "align": "end"
+                        }
+                    ]
+                },
+                {
+                    "type": "text",
+                    "text": s["name"],
+                    "color": "#FFFFFF",
+                    "size": "md",
+                    "weight": "bold",
+                    "margin": "sm",
+                    "wrap": True
+                }
+            ]
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": bg,
+            "paddingAll": "14px",
+            "contents": [
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": "現價",
+                            "color": "#888888",
+                            "size": "sm",
+                            "flex": 1
+                        },
+                        {
+                            "type": "text",
+                            "text": f"{s['price']:,.2f}",
+                            "color": color,
+                            "size": "xl",
+                            "weight": "bold",
+                            "align": "end"
+                        }
+                    ]
+                },
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "margin": "sm",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": "漲跌",
+                            "color": "#888888",
+                            "size": "sm",
+                            "flex": 1
+                        },
+                        {
+                            "type": "text",
+                            "text": f"{arrow} {sign}{s['change']:.2f}  ({sign}{s['pct']:.2f}%)",
+                            "color": color,
+                            "size": "sm",
+                            "weight": "bold",
+                            "align": "end"
+                        }
+                    ]
+                },
+                {
+                    "type": "separator",
+                    "margin": "md",
+                    "color": "#DDDDDD"
+                },
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "margin": "md",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": "資料時間",
+                            "color": "#AAAAAA",
+                            "size": "xs",
+                            "flex": 1
+                        },
+                        {
+                            "type": "text",
+                            "text": s.get("source", "—"),
+                            "color": "#AAAAAA",
+                            "size": "xs",
+                            "align": "end"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    return FlexMessage(
+        alt_text=f"{s['id']} {s['name']} {s['price']}",
+        contents=FlexContainer.from_dict(bubble)
+    )
+
+def make_report_flex(stocks):
+    rows = []
+    for s in stocks:
+        up    = s["pct"] >= 0
+        color = "#27AE60" if up else "#E74C3C"
+        arrow = "▲" if up else "▼"
+        sign  = "+" if up else ""
+        rows.append({
+            "type": "box",
+            "layout": "horizontal",
+            "paddingAll": "10px",
+            "contents": [
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "flex": 2,
+                    "contents": [
+                        {"type": "text", "text": s["id"], "size": "xs", "color": "#888888"},
+                        {"type": "text", "text": s["name"], "size": "sm", "weight": "bold", "wrap": True}
+                    ]
+                },
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "flex": 2,
+                    "contents": [
+                        {"type": "text", "text": f"{s['price']:,.2f}", "size": "md",
+                         "weight": "bold", "color": color, "align": "end"},
+                        {"type": "text", "text": f"{arrow} {sign}{s['pct']:.2f}%",
+                         "size": "xs", "color": color, "align": "end"}
+                    ]
+                }
+            ]
+        })
+        rows.append({"type": "separator", "color": "#EEEEEE"})
+
+    bubble = {
+        "type": "bubble",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": "#1A1A2E",
+            "paddingAll": "14px",
+            "contents": [
+                {"type": "text", "text": "📊 自選股行情",
+                 "color": "#FFFFFF", "size": "md", "weight": "bold"},
+                {"type": "text", "text": datetime.now().strftime("%m/%d %H:%M"),
+                 "color": "#FFFFFF88", "size": "xs", "margin": "sm"}
+            ]
+        },
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "paddingAll": "0px",
+            "contents": rows[:-1]  # 去掉最後一個 separator
+        }
+    }
+    return FlexMessage(
+        alt_text="自選股行情報告",
+        contents=FlexContainer.from_dict(bubble)
+    )
+
+# ── 警示 & 排程 ───────────────────────────────────────
 triggered_today = set()
 
 def check_alerts():
@@ -105,35 +296,29 @@ def check_alerts():
                    f"{s['id']} {s['name']}\n"
                    f"{arrow} {abs(s['pct']):.2f}%　現價 {s['price']}\n"
                    f"門檻：±{thresh}%")
-            push(msg)
+            push_text(msg)
 
-# ── 每日收盤報告 ──────────────────────────────────────
 def daily_report():
-    lines = ["📊 今日收盤報告\n"]
+    stocks = []
     for sid in watchlist:
         s = get_price(sid)
-        if not s: continue
-        arrow = "🔺" if s["pct"] > 0 else "🔻"
-        lines.append(f"{arrow} {s['id']} {s['name']}\n   {s['price']}  {s['change']:+.2f} ({s['pct']:+.2f}%)")
-    push("\n".join(lines))
+        if s: stocks.append(s)
+    if stocks:
+        push_flex(make_report_flex(stocks))
 
-def push(msg):
+def push_text(msg):
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).push_message(
             PushMessageRequest(to=MY_ID, messages=[TextMessage(text=msg)])
         )
 
-# ── 格式化行情訊息 ────────────────────────────────────
-def format_quote(s):
-    arrow = "🔺" if s["pct"] > 0 else "🔻"
-    return (
-        f"{arrow} {s['id']} {s['name']} ({s.get('market','')})\n"
-        f"現價：{s['price']:,}\n"
-        f"漲跌：{s['change']:+.2f} ({s['pct']:+.2f}%)\n"
-        f"時間：{s.get('source','')}"
-    )
+def push_flex(flex_msg):
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).push_message(
+            PushMessageRequest(to=MY_ID, messages=[flex_msg])
+        )
 
-# ── LINE Webhook ──────────────────────────────────────
+# ── Webhook ───────────────────────────────────────────
 @app.route("/callback", methods=["POST"])
 def callback():
     sig  = request.headers["X-Line-Signature"]
@@ -146,49 +331,38 @@ def callback():
 def handle_msg(event):
     text = event.message.text.strip()
 
-    # 特殊關鍵字（台指期、黃金等）
     if text in SPECIAL:
-        symbol = SPECIAL[text]
-        s = get_futures(symbol, text)
-        if s:
-            reply(event, format_quote(s))
-        else:
-            reply(event, f"無法取得 {text} 資料")
+        s = get_special(text)
+        if s: reply_flex(event, make_flex_card(s))
+        else: reply_text(event, f"無法取得 {text} 資料")
 
     elif text == "報告":
-        lines = ["📊 自選股行情\n"]
+        stocks = []
         for sid in watchlist:
             s = get_price(sid)
-            if not s: continue
-            arrow = "🔺" if s["pct"] > 0 else "🔻"
-            lines.append(
-                f"{arrow} {s['id']} {s['name']}\n"
-                f"   現價 {s['price']}  {s['change']:+.2f} ({s['pct']:+.2f}%)\n"
-                f"   [{s.get('source','')}]"
-            )
-        reply(event, "\n".join(lines) if len(lines) > 1 else "無法取得資料")
+            if s: stocks.append(s)
+        if stocks: reply_flex(event, make_report_flex(stocks))
+        else: reply_text(event, "無法取得資料")
 
     elif text == "網頁":
-        reply(event, f"📈 台股追蹤網頁\n{NETLIFY_URL}")
+        reply_text(event, f"📈 台股追蹤網頁\n{NETLIFY_URL}")
 
     elif len(text) >= 4 and len(text) <= 7 and text[0].isdigit() and text.replace("-","").isalnum():
         s = get_price(text)
-        if s:
-            reply(event, format_quote(s))
-        else:
-            reply(event, f"找不到 {text}，請確認代號正確")
+        if s: reply_flex(event, make_flex_card(s))
+        else: reply_text(event, f"找不到 {text}，請確認代號正確")
 
     elif text.startswith("警示 "):
         parts = text.split()
         if len(parts) == 3:
             sid, thresh = parts[1], float(parts[2])
             alerts[sid] = thresh
-            reply(event, f"🔔 已設定 {sid} 漲跌超過 ±{thresh}% 通知")
+            reply_text(event, f"🔔 已設定 {sid} 漲跌超過 ±{thresh}% 通知")
         else:
-            reply(event, "格式：警示 2330 5")
+            reply_text(event, "格式：警示 2330 5")
 
     elif text in ["指令", "help", "選單"]:
-        reply(event,
+        reply_text(event,
             "📋 指令說明\n"
             "──────────\n"
             "【股票】\n"
@@ -207,19 +381,24 @@ def handle_msg(event):
         )
 
     else:
-        reply(event,
+        reply_text(event,
             "輸入股票代號或關鍵字查詢\n"
             "例如：2330、台指期、黃金\n"
             "或輸入「指令」查看所有功能"
         )
 
-def reply(event, msg):
+def reply_text(event, msg):
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=msg)]
-            )
+            ReplyMessageRequest(reply_token=event.reply_token,
+                                messages=[TextMessage(text=msg)])
+        )
+
+def reply_flex(event, flex_msg):
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(reply_token=event.reply_token,
+                                messages=[flex_msg])
         )
 
 # ── 排程 ──────────────────────────────────────────────

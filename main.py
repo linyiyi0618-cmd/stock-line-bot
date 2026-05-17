@@ -588,35 +588,42 @@ def handle_msg(event):
         else:
             reply_text(event, "格式：算 買價 賣價 股數\n範例：算 100 105 3000")
 
-    elif text in ["選股", "明日選股", "隔日選股"]:
-        if not watchlist:
-            reply_text(event, "自選股是空的\n請先用「新增 2330」加入股票")
-        else:
-            results = screen_stocks(watchlist)
-            lines = ["📋 隔日選股報告", datetime.now().strftime("%m/%d") + " 收盤後分析", SEP]
-            has_any = False
-            emoji_map = {"爆量": "🔥", "漲幅領先": "🚀", "突破均線": "📈", "高檔低收": "⭐"}
-            desc_map  = {"爆量": "成交量暴增（>均量3倍）", "漲幅領先": "昨日漲跌超過±3%",
-                         "突破均線": "突破MA5/MA20均線", "高檔低收": "高檔低收（隔日續漲型）"}
-            for strategy, stocks in results.items():
-                if not stocks: continue
-                has_any = True
-                lines.append("")
-                lines.append(emoji_map[strategy] + " " + strategy + "｜" + desc_map[strategy])
-                for s in stocks[:3]:
-                    arrow = "▲" if s["pct"] > 0 else "▼"
-                    extra = ""
-                    if "vol_ratio" in s: extra = "  量比 " + str(s["vol_ratio"]) + "x"
-                    elif "broke" in s:  extra = "  突破" + s["broke"]
-                    elif "tail" in s:   extra = "  上影線" + str(s["tail"]) + "%"
-                    lines.append("  • " + s["id"] + " " + s["name"] + "  " + arrow + "{:+.2f}".format(s["pct"]) + "%" + extra)
-            if not has_any:
-                lines.append("\n今日無符合條件的股票")
-                lines.append("建議明日盤中觀察強勢股")
+    elif text in ["選股", "明日選股", "隔日選股", "明天買什麼", "推薦"]:
+        # 全市場掃描，不限時間，假日也能用
+        results = screen_stocks(STOCK_POOL)
+        last_trading = datetime.now().strftime("%m/%d")
+        lines = [
+            "📋 明日潛力選股",
+            last_trading + " 資料分析",
+            "掃描 " + str(len(STOCK_POOL)) + " 檔台股",
+            SEP
+        ]
+        has_any = False
+        emoji_map = {"爆量": "🔥", "漲幅領先": "🚀", "突破均線": "📈", "高檔低收": "⭐"}
+        desc_map  = {
+            "爆量":    "成交量暴增（>均量3倍）",
+            "漲幅領先":"漲跌超過±3%",
+            "突破均線":"突破MA5/MA20",
+            "高檔低收":"高檔低收續漲型"
+        }
+        for strategy, stocks in results.items():
+            if not stocks: continue
+            has_any = True
             lines.append("")
-            lines.append(SEP)
-            lines.append("⚠️ 僅供參考，注意風險")
-            reply_text(event, "\n".join(lines))
+            lines.append(emoji_map[strategy] + " " + strategy + "｜" + desc_map[strategy])
+            for s in stocks[:5]:
+                arrow = "▲" if s["pct"] > 0 else "▼"
+                extra = ""
+                if "vol_ratio" in s: extra = "  量比" + str(s["vol_ratio"]) + "x"
+                elif "broke" in s:   extra = "  突破" + s["broke"]
+                elif "tail" in s:    extra = "  上影" + str(s["tail"]) + "%"
+                lines.append("• " + s["id"] + " " + s["name"]
+                              + "  " + arrow + "{:+.2f}".format(s["pct"]) + "%" + extra)
+        if not has_any:
+            lines.append("本次無符合條件股票")
+            lines.append("可能為假日或市場偏弱")
+        lines.extend(["", SEP, "⚠️ 僅供參考，請自行判斷"])
+        reply_text(event, "\n".join(lines))
 
     elif text in ["強勢", "弱勢", "強", "弱", "漲停", "跌停"]:
         want_strong = text in ["強勢", "強", "漲停"]

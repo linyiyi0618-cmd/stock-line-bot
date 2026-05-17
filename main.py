@@ -1,4 +1,6 @@
 import os, time, requests, json
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from urllib.parse import quote
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
@@ -72,7 +74,7 @@ STOCK_POOL = list(dict.fromkeys(STOCK_POOL))
 def fetch_yahoo(symbol):
     url = "https://query1.finance.yahoo.com/v8/finance/chart/" + symbol + "?interval=1d&range=5d"
     headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, timeout=10)
+    r = requests.get(url, headers=headers, timeout=10, verify=False)
     data = r.json()
     result = data["chart"]["result"]
     if not result: return None
@@ -92,7 +94,7 @@ def fetch_history(stock_id):
         try:
             url = "https://query1.finance.yahoo.com/v8/finance/chart/" + stock_id + suffix + "?interval=1d&range=60d"
             headers = {"User-Agent": "Mozilla/5.0"}
-            r = requests.get(url, headers=headers, timeout=10)
+            r = requests.get(url, headers=headers, timeout=10, verify=False)
             data = r.json()
             result = data["chart"]["result"]
             if not result: continue
@@ -166,7 +168,7 @@ def screen_stocks(ids):
             for suffix in [".TW", ".TWO"]:
                 r2 = requests.get(
                     "https://query1.finance.yahoo.com/v8/finance/chart/" + sid + suffix + "?interval=1d&range=5d",
-                    headers={"User-Agent": "Mozilla/5.0"}, timeout=8
+                    headers={"User-Agent": "Mozilla/5.0"}, timeout=8, verify=False
                 )
                 meta2 = r2.json()["chart"]["result"][0]["meta"]
                 n2 = meta2.get("longName") or meta2.get("shortName", "")
@@ -206,7 +208,7 @@ def get_market_movers(want_top=True, n=5):
     try:
         r = requests.get(
             "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_&_=" + str(int(time.time())),
-            headers={"User-Agent": "Mozilla/5.0"}, timeout=15
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=15, verify=False
         )
         items = r.json().get("msgArray", [])
         stocks = []
@@ -263,7 +265,7 @@ def make_chart_url(stock_id, name, hist):
         resp = requests.post(
             "https://quickchart.io/chart/create",
             json={"chart": chart_config, "width": 800, "height": 400, "backgroundColor": "#1A1A2E"},
-            timeout=15
+            timeout=15, verify=False
         )
         data = resp.json()
         if data.get("success"):

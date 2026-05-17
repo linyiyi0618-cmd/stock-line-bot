@@ -104,6 +104,150 @@ def get_special(keyword):
         print(f"[special] {keyword}: {e}")
     return None
 
+# ── 隔日選股引擎 ─────────────────────────────────────
+def fetch_twse_daily(stock_id):
+    """抓近60天日K資料"""
+    for suffix in [".TW", ".TWO"]:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?interval=1d&range=60d"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            r = requests.get(url, headers=headers, timeout=10)
+            data = r.json()
+            result = data["chart"]["result"]
+            if not result: continue
+            q = result[0]["indicators"]["quote"][0]
+            timestamps = result[0]["timestamp"]
+            closes  = q.get("close", [])
+            volumes = q.get("volume", [])
+            opens   = q.get("open", [])
+            highs   = q.get("high", [])
+            # 過濾掉 None
+            rows = []
+            for ts, c, v, o, h in zip(timestamps, closes, volumes, opens, highs):
+                if None in [c, v, o, h]: continue
+                rows.append({"date": datetime.fromtimestamp(ts).strftime("%m/%d"),
+                             "close": round(c,2), "volume": int(v),
+                             "open": round(o,2), "high": round(h,2)})
+            if rows:
+                return rows
+        except Exception as e:
+            print(f"[daily] {stock_id}{suffix}: {e}")
+    return None
+
+def screen_stocks(watchlist_ids):
+    """對自選股跑四種策略篩選，回傳命中結果"""
+    results = {
+        "爆量": [],
+        "漲幅領先": [],
+        "突破均線": [],
+        "高檔低收": []
+    }
+
+    for sid in watchlist_ids:
+        rows = fetch_twse_daily(sid)
+        if not rows or len(rows) < 21:
+            continue
+
+        closes  = [r["close"]  for r in rows]
+        volumes = [r["volume"] for r in rows]
+        opens   = [r["open"]   for r in rows]
+        highs   = [r["high"]   for r in rows]
+
+        last   = rows[-1]
+        prev   = rows[-2] if len(rows) >= 2 else None
+
+        # 昨日漲跌幅
+        if prev:
+            pct = round((last["close"] - prev["close"]) / prev["close"] * 100, 2)
+        else:
+            pct = 0
+
+        name_data = get_price(sid)
+        name = name_data["name"] if name_data else sid
+
+        entry = {"id": sid, "name": name,
+                 "close": last["close"], "pct": pct,
+                 "date": last["date"]}
+
+        # 策略1：爆量（昨日成交量 > 20日均量 * 3）
+        avg_vol = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else 0
+        if avg_vol > 0 and last["volume"] >= avg_vol * 3:
+            entry["vol_ratio"] = round(last["volume"] / avg_vol, 1)
+            results["爆量"].append(dict(entry))
+
+        # 策略2：漲幅領先（昨日漲跌幅超過 ±3%）
+        if abs(pct) >= 3:
+            results["漲幅領先"].append(dict(entry))
+
+        # 策略3：突破均線（收盤突破MA5 或 MA20）
+        if len(closes) >= 20:
+            ma5  = round(sum(closes[-6:-1]) / 5, 2)
+            ma20 = round(sum(closes[-21:-1]) / 20, 2)
+            prev_close = closes[-2] if len(closes) >= 2 else closes[-1]
+            broke_ma5  = prev_close < ma5  and last["close"] >= ma5
+            broke_ma20 = prev_close < ma20 and last["close"] >= ma20
+            if broke_ma5 or broke_ma20:
+                entry["broke"] = "MA5" if broke_ma5 else "MA20"
+                results["突破均線"].append(dict(entry))
+
+        # 策略4：高檔低收（昨日高點 - 收盤 < 1%，但漲幅 > 1%，隔日有機會繼續）
+        if pct > 1:
+            tail = round((last["high"] - last["close"]) / last["close"] * 100, 2)
+            if tail < 1.0:
+                entry["tail"] = tail
+                results["高檔低收"].append(dict(entry))
+
+    return results
+
+# ── 全市場漲跌幅排行（TWSE）────────────────────────────
+def get_market_movers(want_top=True, n=5):
+    """
+    從 TWSE 抓今日全市場即時行情，回傳漲幅/跌幅前N名
+    """
+    try:
+        url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&_=" + str(int(time.time()))
+        # 改用全市場即時成交資料
+        url2 = f"https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?type=IND&response=json&_={int(time.time())}"
+
+        # 用 TWSE 即時個股行情全量 API
+        r = requests.get(
+            f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_&_={int(time.time())}",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=15
+        )
+        items = r.json().get("msgArray", [])
+
+        stocks = []
+        for item in items:
+            try:
+                z = item.get("z", "-")
+                y = item.get("y", "-")
+                if z in ["-", "", None] or y in ["-", "", None]:
+                    continue
+                price = float(z)
+                prev  = float(y)
+                if prev <= 0: continue
+                chg = round(price - prev, 2)
+                pct = round((chg / prev) * 100, 2)
+                stocks.append({
+                    "id":     item.get("c", ""),
+                    "name":   item.get("n", ""),
+                    "price":  price,
+                    "change": chg,
+                    "pct":    pct
+                })
+            except:
+                continue
+
+        if not stocks:
+            return None
+
+        stocks.sort(key=lambda x: x["pct"], reverse=want_top)
+        return stocks[:n]
+
+    except Exception as e:
+        print(f"[market_movers] {e}")
+        return None
+
 def is_trading():
     now = datetime.now()
     if now.weekday() >= 5: return False
@@ -428,6 +572,130 @@ def handle_msg(event):
             reply_text(event, f"🔔 已設定 {sid} 漲跌超過 ±{thresh}% 通知")
         else:
             reply_text(event, "格式：警示 2330 5")
+
+    # ── 單沖損益計算器 ──
+    elif text.startswith("算 "):
+        parts = text.split()
+        if len(parts) == 4:
+            try:
+                buy   = float(parts[1])
+                sell  = float(parts[2])
+                qty   = int(parts[3])
+                # 手續費 0.1425%（買賣各一次），券商折扣以六折計算
+                fee_rate    = 0.001425 * 0.6
+                tax_rate    = 0.003   # 賣出才有證交稅
+                buy_fee     = round(buy  * qty * fee_rate, 0)
+                sell_fee    = round(sell * qty * fee_rate, 0)
+                sell_tax    = round(sell * qty * tax_rate, 0)
+                gross       = round((sell - buy) * qty, 0)
+                total_cost  = buy_fee + sell_fee + sell_tax
+                net         = gross - total_cost
+                roi         = round((net / (buy * qty)) * 100, 2)
+                arrow = "🟢 獲利" if net >= 0 else "🔴 虧損"
+                reply_text(event,
+                    f"📊 單沖損益試算
+"
+                    f"{'─'*20}
+"
+                    f"買價：{buy}　賣價：{sell}　股數：{qty:,}
+"
+                    f"{'─'*20}
+"
+                    f"毛利：{gross:+,.0f} 元
+"
+                    f"買手續費：-{buy_fee:,.0f} 元
+"
+                    f"賣手續費：-{sell_fee:,.0f} 元
+"
+                    f"證交稅：-{sell_tax:,.0f} 元
+"
+                    f"{'─'*20}
+"
+                    f"{arrow}：{net:+,.0f} 元
+"
+                    f"報酬率：{roi:+.2f}%
+"
+                    f"{'─'*20}
+"
+                    f"※ 手續費以六折計算"
+                )
+            except:
+                reply_text(event, "格式錯誤
+範例：算 100 105 3000
+（買價 賣價 股數）")
+        else:
+            reply_text(event, "格式：算 買價 賣價 股數
+範例：算 100 105 3000")
+
+    # ── 隔日選股 ──
+    elif text in ["選股", "明日選股", "隔日選股"]:
+        if not watchlist:
+            reply_text(event, "自選股是空的
+請先用「新增 2330」加入股票")
+        else:
+            reply_text(event, f"🔍 分析 {len(watchlist)} 檔自選股中，請稍候...")
+            results = screen_stocks(watchlist)
+            lines = [f"📋 隔日選股報告
+{datetime.now().strftime('%m/%d')} 收盤後分析
+{'─'*20}"]
+            has_any = False
+
+            emoji_map = {"爆量":"🔥", "漲幅領先":"🚀", "突破均線":"📈", "高檔低收":"⭐"}
+            desc_map  = {
+                "爆量":    "成交量暴增（>均量3倍）",
+                "漲幅領先":"昨日漲跌超過±3%",
+                "突破均線":"突破MA5/MA20均線",
+                "高檔低收":"高檔低收（隔日續漲型）"
+            }
+
+            for strategy, stocks in results.items():
+                if not stocks: continue
+                has_any = True
+                lines.append(f"
+{emoji_map[strategy]} {strategy}｜{desc_map[strategy]}")
+                for s in stocks[:3]:
+                    arrow = "▲" if s["pct"] > 0 else "▼"
+                    extra = ""
+                    if "vol_ratio" in s:
+                        extra = f"  量比 {s['vol_ratio']}x"
+                    elif "broke" in s:
+                        extra = f"  突破{s['broke']}"
+                    elif "tail" in s:
+                        extra = f"  上影線{s['tail']}%"
+                    lines.append(f"  • {s['id']} {s['name']}  {arrow}{s['pct']:+.2f}%{extra}")
+
+            if not has_any:
+                lines.append("
+今日無符合條件的股票
+建議明日盤中觀察強勢股")
+
+            lines.append(f"
+{'─'*20}
+⚠️ 僅供參考，注意風險")
+            reply_text(event, "
+".join(lines))
+
+    # ── 強弱勢選股（全市場）──
+    elif text in ["強勢", "弱勢", "強", "弱", "漲停", "跌停"]:
+        want_strong = text in ["強勢", "強", "漲停"]
+        label = "🔺 全市場漲幅前5名" if want_strong else "🔻 全市場跌幅前5名"
+        result = get_market_movers(want_strong)
+        if result:
+            lines = [f"{label}
+{'─'*20}"]
+            for i, s in enumerate(result, 1):
+                arrow = "▲" if s["pct"] > 0 else "▼"
+                lines.append(
+                    f"{i}. {s['id']} {s['name']}
+"
+                    f"   現價 {s['price']}　{arrow} {s['pct']:+.2f}%"
+                )
+            lines.append(f"{'─'*20}
+更新：{datetime.now().strftime('%H:%M')}")
+            reply_text(event, "
+".join(lines))
+        else:
+            reply_text(event, "無法取得市場資料，請在盤中時間查詢")
 
     elif text in ["指令", "help", "選單"]:
         reply_text(event,

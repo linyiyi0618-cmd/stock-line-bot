@@ -596,40 +596,38 @@ def handle_msg(event):
         reply_text(event, "🔍 掃描全市場中\n約需30秒，結果將自動推播給你...")
         # 背景執行選股，完成後 push 結果
         def do_screen():
-            results = screen_stocks(STOCK_POOL)
+            stocks = screen_stocks(STOCK_POOL)
             last_trading = datetime.now().strftime("%m/%d")
+
+            # 星星評分
+            def stars(score):
+                if score >= 6: return "★★★ 強烈關注"
+                if score >= 4: return "★★☆ 值得關注"
+                return "★☆☆ 留意觀察"
+
             lines = [
                 "📋 明日潛力選股",
-                last_trading + " 資料分析",
-                "掃描 " + str(len(STOCK_POOL)) + " 檔",
+                last_trading + " 分析  共 " + str(len(stocks)) + " 檔入選",
                 SEP
             ]
-            has_any = False
-            emoji_map = {"爆量": "🔥", "漲幅領先": "🚀", "突破均線": "📈", "高檔低收": "⭐"}
-            desc_map  = {
-                "爆量":    "成交量暴增（>均量3倍）",
-                "漲幅領先":"漲跌超過±3%",
-                "突破均線":"突破MA5/MA20",
-                "高檔低收":"高檔低收續漲型"
-            }
-            for strategy, stocks in results.items():
-                if not stocks: continue
-                has_any = True
-                lines.append("")
-                lines.append(emoji_map[strategy] + " " + strategy + "｜" + desc_map[strategy])
-                for s in stocks[:5]:
-                    arrow = "▲" if s["pct"] > 0 else "▼"
-                    extra = ""
-                    if "vol_ratio" in s: extra = "  量比" + str(s["vol_ratio"]) + "x"
-                    elif "broke" in s:   extra = "  突破" + s["broke"]
-                    elif "tail" in s:    extra = "  上影" + str(s["tail"]) + "%"
-                    lines.append("• " + s["id"] + " " + s["name"]
-                                  + "  " + arrow + "{:+.2f}".format(s["pct"]) + "%" + extra)
-            if not has_any:
+
+            if not stocks:
                 lines.append("本次無符合條件股票")
                 lines.append("可能為假日或市場偏弱")
+            else:
+                # 顯示前10名
+                for i, s in enumerate(stocks[:10], 1):
+                    arrow = "▲" if s["pct"] > 0 else "▼"
+                    sign  = "+" if s["pct"] > 0 else ""
+                    tag_str = " ".join(s["tags"])
+                    score_str = stars(s["score"])
+                    lines.append("")
+                    lines.append(str(i) + ". " + s["id"] + " " + s["name"])
+                    lines.append("   " + arrow + sign + "{:.2f}".format(s["pct"]) + "%  收" + str(s["close"]))
+                    lines.append("   " + score_str)
+                    lines.append("   " + tag_str)
+
             lines.extend(["", SEP, "⚠️ 僅供參考，請自行判斷"])
-            # 用 push 推播給使用者
             with ApiClient(configuration) as api_client:
                 MessagingApi(api_client).push_message(
                     PushMessageRequest(to=user_id, messages=[TextMessage(text="\n".join(lines))])
@@ -718,36 +716,29 @@ def reply_image(event, image_url, preview_url):
 # ── 排程 ──────────────────────────────────────────────
 def auto_screen():
     """每日收盤後自動推播選股結果"""
-    results = screen_stocks(STOCK_POOL)
+    def stars(score):
+        if score >= 6: return "★★★ 強烈關注"
+        if score >= 4: return "★★☆ 值得關注"
+        return "★☆☆ 留意觀察"
+
+    stocks = screen_stocks(STOCK_POOL)
     lines = [
-        "📋 明日潛力選股",
-        datetime.now().strftime("%m/%d") + " 自動推播",
-        "掃描 " + str(len(STOCK_POOL)) + " 檔台股",
+        "📋 每日自動選股",
+        datetime.now().strftime("%m/%d") + " 收盤後推播",
+        "共 " + str(len(stocks)) + " 檔入選",
         SEP
     ]
-    has_any = False
-    emoji_map = {"爆量": "🔥", "漲幅領先": "🚀", "突破均線": "📈", "高檔低收": "⭐"}
-    desc_map  = {
-        "爆量":    "成交量暴增（>均量3倍）",
-        "漲幅領先":"昨日漲跌超過±3%",
-        "突破均線":"突破MA5/MA20均線",
-        "高檔低收":"高檔低收（隔日續漲型）"
-    }
-    for strategy, stocks in results.items():
-        if not stocks: continue
-        has_any = True
-        lines.append("")
-        lines.append(emoji_map[strategy] + " " + strategy)
-        for s in stocks[:5]:
-            arrow = "▲" if s["pct"] > 0 else "▼"
-            extra = ""
-            if "vol_ratio" in s: extra = "  量比" + str(s["vol_ratio"]) + "x"
-            elif "broke" in s:   extra = "  突破" + s["broke"]
-            elif "tail" in s:    extra = "  上影" + str(s["tail"]) + "%"
-            lines.append("• " + s["id"] + " " + s["name"]
-                          + "  " + arrow + "{:+.2f}".format(s["pct"]) + "%" + extra)
-    if not has_any:
+    if not stocks:
         lines.extend(["今日無符合條件股票", "市場偏弱，注意風險"])
+    else:
+        for i, s in enumerate(stocks[:10], 1):
+            arrow = "▲" if s["pct"] > 0 else "▼"
+            sign  = "+" if s["pct"] > 0 else ""
+            lines.append("")
+            lines.append(str(i) + ". " + s["id"] + " " + s["name"])
+            lines.append("   " + arrow + sign + "{:.2f}".format(s["pct"]) + "%  收" + str(s["close"]))
+            lines.append("   " + stars(s["score"]))
+            lines.append("   " + " ".join(s["tags"]))
     lines.extend(["", SEP, "⚠️ 僅供參考，請自行判斷"])
     push_text("\n".join(lines))
 

@@ -596,41 +596,39 @@ def handle_msg(event):
         reply_text(event, "🔍 掃描全市場中\n約需30秒，結果將自動推播給你...")
         # 背景執行選股，完成後 push 結果
         def do_screen():
-            stocks = screen_stocks(STOCK_POOL)
-            last_trading = datetime.now().strftime("%m/%d")
+            try:
+                stocks = screen_stocks(STOCK_POOL)
+                last_trading = datetime.now().strftime("%m/%d")
 
-            # 星星評分
-            def stars(score):
-                if score >= 6: return "★★★ 強烈關注"
-                if score >= 4: return "★★☆ 值得關注"
-                return "★☆☆ 留意觀察"
+                def stars(score):
+                    if score >= 6: return "★★★ 強烈關注"
+                    if score >= 4: return "★★☆ 值得關注"
+                    return "★☆☆ 留意觀察"
 
-            lines = [
-                "📋 明日潛力選股",
-                last_trading + " 分析  共 " + str(len(stocks)) + " 檔入選",
-                SEP
-            ]
-
-            if not stocks:
-                lines.append("本次無符合條件股票")
-                lines.append("可能為假日或市場偏弱")
-            else:
-                # 顯示前10名
-                for i, s in enumerate(stocks[:10], 1):
-                    arrow = "▲" if s["pct"] > 0 else "▼"
-                    sign  = "+" if s["pct"] > 0 else ""
-                    tag_str = " ".join(s["tags"])
-                    score_str = stars(s["score"])
-                    lines.append("")
-                    lines.append(str(i) + ". " + s["id"] + " " + s["name"])
-                    lines.append("   " + arrow + sign + "{:.2f}".format(s["pct"]) + "%  收" + str(s["close"]))
-                    lines.append("   " + score_str)
-                    lines.append("   " + tag_str)
-
-            lines.extend(["", SEP, "⚠️ 僅供參考，請自行判斷"])
+                lines = [
+                    "📋 明日潛力選股",
+                    last_trading + " 分析  共 " + str(len(stocks)) + " 檔入選",
+                    SEP
+                ]
+                if not stocks:
+                    lines.append("本次無符合條件股票")
+                    lines.append("可能為假日或市場偏弱")
+                else:
+                    for i, s in enumerate(stocks[:10], 1):
+                        arrow = "▲" if s["pct"] > 0 else "▼"
+                        sign  = "+" if s["pct"] > 0 else ""
+                        lines.append("")
+                        lines.append(str(i) + ". " + s["id"] + " " + s["name"])
+                        lines.append("   " + arrow + sign + "{:.2f}".format(s["pct"]) + "%  收" + str(s["close"]))
+                        lines.append("   " + stars(s["score"]))
+                        lines.append("   " + " ".join(s["tags"]))
+                lines.extend(["", SEP, "⚠️ 僅供參考，請自行判斷"])
+                msg = "\n".join(lines)
+            except Exception as e:
+                msg = "❌ 選股發生錯誤：" + str(e)
             with ApiClient(configuration) as api_client:
                 MessagingApi(api_client).push_message(
-                    PushMessageRequest(to=user_id, messages=[TextMessage(text="\n".join(lines))])
+                    PushMessageRequest(to=user_id, messages=[TextMessage(text=msg)])
                 )
         threading.Thread(target=do_screen, daemon=True).start()
 

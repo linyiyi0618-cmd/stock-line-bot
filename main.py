@@ -156,10 +156,20 @@ def make_chart_url(stock_id, name, hist):
             "backgroundColor": "#1A1A2E"
         }
     }
-    config_str = json.dumps(chart_config, ensure_ascii=False)
-    encoded    = quote(config_str)
-    url = f"https://quickchart.io/chart?c={encoded}&width=800&height=400&backgroundColor=%231A1A2E"
-    return url
+    # 用 QuickChart 短網址 API，避免超過 LINE 2000 字元限制
+    try:
+        resp = requests.post(
+            "https://quickchart.io/chart/create",
+            json={"chart": chart_config, "width": 800, "height": 400,
+                  "backgroundColor": "#1A1A2E"},
+            timeout=15
+        )
+        data = resp.json()
+        if data.get("success"):
+            return data["url"]
+    except Exception as e:
+        print(f"[quickchart] {e}")
+    return None
 
 # ── Flex Message 卡片 ─────────────────────────────────
 def make_flex_card(s):
@@ -398,7 +408,10 @@ def handle_msg(event):
             s = get_price(sid)
             name = s["name"] if s else sid
             chart_url = make_chart_url(sid, name, hist)
-            reply_image(event, chart_url, chart_url)
+            if chart_url:
+                reply_image(event, chart_url, chart_url)
+            else:
+                reply_text(event, f"圖表產生失敗，請稍後再試")
         else:
             reply_text(event, f"無法取得 {sid} 歷史資料，請確認代號正確")
 

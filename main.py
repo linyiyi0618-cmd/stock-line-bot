@@ -393,7 +393,6 @@ def handle_msg(event):
     # K線圖：輸入「K 2330」或「圖 2330」
     elif text.startswith("K ") or text.startswith("圖 ") or text.startswith("k "):
         sid = text.split(" ", 1)[1].strip().upper()
-        reply_text(event, f"📈 {sid} 圖表產生中，請稍候...")
         hist = fetch_history(sid)
         if hist:
             s = get_price(sid)
@@ -401,7 +400,7 @@ def handle_msg(event):
             chart_url = make_chart_url(sid, name, hist)
             reply_image(event, chart_url, chart_url)
         else:
-            reply_text(event, f"無法取得 {sid} 歷史資料")
+            reply_text(event, f"無法取得 {sid} 歷史資料，請確認代號正確")
 
     elif len(text) >= 4 and len(text) <= 7 and text[0].isdigit() and text.replace("-","").isalnum():
         s = get_price(text)

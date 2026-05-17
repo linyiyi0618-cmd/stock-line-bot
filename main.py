@@ -199,9 +199,17 @@ def screen_stocks(ids):
         if pct > 1:
             tail = round((last["high"] - last["close"]) / last["close"] * 100, 2)
             if tail < 1.0:
-                e = dict(entry); e["tail"] = tail; results["高檔低收"].append(e)
+                score += 2; tags.append("⭐高檔低收")
 
-    return results
+        if score > 0:
+            stock_scores[sid] = {
+                "id": sid, "name": name,
+                "close": last["close"], "pct": pct,
+                "date": last["date"], "score": score,
+                "tags": tags
+            }
+
+    return sorted(stock_scores.values(), key=lambda x: x["score"], reverse=True)
 
 # ── 全市場漲跌幅排行 ──────────────────────────────────
 def get_market_movers(want_top=True, n=5):
@@ -596,8 +604,10 @@ def handle_msg(event):
         reply_text(event, "🔍 掃描全市場中\n約需30秒，結果將自動推播給你...")
         # 背景執行選股，完成後 push 結果
         def do_screen():
+            print("[選股] 開始掃描 user=" + user_id)
             try:
                 stocks = screen_stocks(STOCK_POOL)
+                print("[選股] 掃描完成，入選 " + str(len(stocks)) + " 檔")
                 last_trading = datetime.now().strftime("%m/%d")
 
                 def stars(score):
@@ -626,10 +636,16 @@ def handle_msg(event):
                 msg = "\n".join(lines)
             except Exception as e:
                 msg = "❌ 選股發生錯誤：" + str(e)
-            with ApiClient(configuration) as api_client:
-                MessagingApi(api_client).push_message(
-                    PushMessageRequest(to=user_id, messages=[TextMessage(text=msg)])
-                )
+                print("[選股] 錯誤：" + str(e))
+            print("[選股] 準備推播...")
+            try:
+                with ApiClient(configuration) as api_client:
+                    MessagingApi(api_client).push_message(
+                        PushMessageRequest(to=user_id, messages=[TextMessage(text=msg)])
+                    )
+                print("[選股] 推播成功")
+            except Exception as e2:
+                print("[選股] 推播失敗：" + str(e2))
         threading.Thread(target=do_screen, daemon=True).start()
 
     elif text in ["強勢", "弱勢", "強", "弱", "漲停", "跌停"]:

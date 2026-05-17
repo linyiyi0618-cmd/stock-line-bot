@@ -160,8 +160,21 @@ def screen_stocks(ids):
         last = rows[-1]
         prev_row = rows[-2] if len(rows) >= 2 else None
         pct = round((last["close"] - prev_row["close"]) / prev_row["close"] * 100, 2) if prev_row else 0
-        nd = get_price(sid)
-        name = nd["name"] if nd else sid
+        # 從 Yahoo Finance 直接取名稱，不依賴即時 API
+        name = sid
+        try:
+            for suffix in [".TW", ".TWO"]:
+                r2 = requests.get(
+                    "https://query1.finance.yahoo.com/v8/finance/chart/" + sid + suffix + "?interval=1d&range=5d",
+                    headers={"User-Agent": "Mozilla/5.0"}, timeout=8
+                )
+                meta2 = r2.json()["chart"]["result"][0]["meta"]
+                n2 = meta2.get("longName") or meta2.get("shortName", "")
+                if n2:
+                    name = n2
+                    break
+        except:
+            pass
         entry = {"id": sid, "name": name, "close": last["close"], "pct": pct, "date": last["date"]}
 
         avg_vol = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else 0
@@ -619,7 +632,7 @@ def handle_msg(event):
             lines.append("更新：" + datetime.now().strftime("%H:%M"))
             reply_text(event, "\n".join(lines))
         else:
-            reply_text(event, "無法取得市場資料\n請在盤中時間查詢（09:00-13:30）")
+            reply_text(event, "無法取得市場資料\n強弱勢排行需在盤中查詢（09:00-13:30）")
 
     elif len(text) >= 4 and len(text) <= 7 and text[0].isdigit() and text.replace("-","").isalnum():
         s = get_price(text)

@@ -11,68 +11,38 @@ import threading, schedule
 from datetime import datetime, date
 
 app = Flask(__name__)
-TOKEN  = os.environ["LINE_TOKEN"]
-SECRET = os.environ["LINE_SECRET"]
-MY_ID  = os.environ["LINE_USER_ID"]
+TOKEN       = os.environ["LINE_TOKEN"]
+SECRET      = os.environ["LINE_SECRET"]
+MY_ID       = os.environ["LINE_USER_ID"]
 NETLIFY_URL = os.environ.get("NETLIFY_URL", "")
 
 configuration = Configuration(access_token=TOKEN)
 handler = WebhookHandler(SECRET)
 
-# ── 自選股 & 警示（記憶體）──────────────────────────────
 watchlist = ["2330", "0050"]
-alerts = {}  # {stock_id: threshold_%}
+alerts = {}
 
-# ── 抓股價（盤中即時 + 盤後歷史備援）────────────────────
+# ── 抓股價（Yahoo Finance 後端版，全天候可用）────────────
 def get_price(stock_id):
-    # 層1：TWSE 即時行情（盤中）
     try:
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw&_={int(time.time())}"
-        r = requests.get(url, timeout=8)
-        item = r.json()["msgArray"][0]
-        name = item.get("n", stock_id)
-        price = float(item.get("z") or 0)
-        prev  = float(item.get("y") or 0)
-        if price > 0 and prev > 0:
-            chg = round(price - prev, 2)
-            pct = round((chg / prev) * 100, 2)
-            return {"id": stock_id, "name": name, "price": price,
-                    "change": chg, "pct": pct, "source": "即時"}
-        # 非盤中：z="-"，用昨收當現價
-        if prev > 0:
-            return {"id": stock_id, "name": name, "price": prev,
-                    "change": 0, "pct": 0, "source": "昨收"}
-    except:
-        pass
-
-    # 層2：TWSE 每月收盤資料（備援）
-    try:
-        now = datetime.now()
-        for delta in range(3):
-            m = now.month - delta
-            y = now.year
-            if m <= 0:
-                m += 12
-                y -= 1
-            ym = f"{y}{m:02d}01"
-            url2 = f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?date={ym}&stockNo={stock_id}&response=json"
-            r2 = requests.get(url2, timeout=8)
-            d = r2.json()
-            if d.get("data") and len(d["data"]) > 0:
-                rows = d["data"]
-                row  = rows[-1]
-                price = float(row[6].replace(",", ""))
-                prev2 = float(rows[-2][6].replace(",", "")) if len(rows) > 1 else price
-                chg   = round(price - prev2, 2)
-                pct   = round((chg / prev2) * 100, 2) if prev2 else 0
-                title = d.get("title", "")
-                name  = title.split(" ")[2] if len(title.split(" ")) > 2 else stock_id
-                return {"id": stock_id, "name": name, "price": price,
-                        "change": chg, "pct": pct, "source": f"{row[0]} 收盤"}
-    except:
-        pass
-
-    return None
+        symbol = f"{stock_id}.TW"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+        meta = data["chart"]["result"][0]["meta"]
+        price    = round(meta.get("regularMarketPrice", 0), 2)
+        prev     = round(meta.get("chartPreviousClose") or meta.get("previousClose", price), 2)
+        name     = meta.get("longName") or meta.get("shortName") or stock_id
+        chg      = round(price - prev, 2)
+        pct      = round((chg / prev) * 100, 2) if prev else 0
+        mkt_time = datetime.fromtimestamp(meta.get("regularMarketTime", time.time()))
+        source   = mkt_time.strftime("%m/%d %H:%M")
+        return {"id": stock_id, "name": name, "price": price,
+                "change": chg, "pct": pct, "source": source}
+    except Exception as e:
+        print(f"[get_price error] {stock_id}: {e}")
+        return None
 
 def is_trading():
     now = datetime.now()
@@ -140,7 +110,7 @@ def handle_msg(event):
                 f"   現價 {s['price']}  {s['change']:+.2f} ({s['pct']:+.2f}%)\n"
                 f"   [{s.get('source','')}]"
             )
-        reply(event, "\n".join(lines) if len(lines)>1 else "無法取得資料")
+        reply(event, "\n".join(lines) if len(lines) > 1 else "無法取得資料")
 
     elif text == "網頁":
         reply(event, f"📈 台股追蹤網頁\n{NETLIFY_URL}")
@@ -153,10 +123,10 @@ def handle_msg(event):
                 f"{arrow} {s['id']} {s['name']}\n"
                 f"現價：{s['price']}\n"
                 f"漲跌：{s['change']:+.2f} ({s['pct']:+.2f}%)\n"
-                f"資料：{s.get('source','')}"
+                f"時間：{s.get('source','')}"
             )
         else:
-            reply(event, f"找不到 {text}，請確認代號正確（僅支援上市股票）")
+            reply(event, f"找不到 {text}，請確認代號正確")
 
     elif text.startswith("警示 "):
         parts = text.split()
@@ -167,7 +137,7 @@ def handle_msg(event):
         else:
             reply(event, "格式：警示 2330 5")
 
-    elif text == "指令" or text == "help":
+    elif text in ["指令", "help", "選單"]:
         reply(event,
             "📋 指令說明\n"
             "──────────\n"

@@ -22,7 +22,20 @@ handler = WebhookHandler(SECRET)
 watchlist = ["2330", "0050"]
 alerts = {}
 
-# ── 抓股價（自動判斷上市/上櫃）──────────────────────────
+# ── 特殊代號對照表 ────────────────────────────────────
+SPECIAL = {
+    "台指期": "FITX=F",
+    "小台":   "FITX=F",
+    "那斯達克": "^IXIC",
+    "道瓊":   "^DJI",
+    "標普":   "^GSPC",
+    "費半":   "^SOX",
+    "黃金":   "GC=F",
+    "原油":   "CL=F",
+    "美元":   "DX-Y.NYB",
+}
+
+# ── 抓行情（通用）────────────────────────────────────
 def fetch_yahoo(symbol):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -37,15 +50,14 @@ def fetch_yahoo(symbol):
     name  = meta.get("longName") or meta.get("shortName") or symbol
     if price <= 0:
         return None
-    chg  = round(price - prev, 2)
-    pct  = round((chg / prev) * 100, 2) if prev else 0
-    ts   = meta.get("regularMarketTime", time.time())
-    src  = datetime.fromtimestamp(ts).strftime("%m/%d %H:%M")
+    chg = round(price - prev, 2)
+    pct = round((chg / prev) * 100, 2) if prev else 0
+    ts  = meta.get("regularMarketTime", time.time())
+    src = datetime.fromtimestamp(ts).strftime("%m/%d %H:%M")
     return {"price": price, "change": chg, "pct": pct, "name": name, "source": src}
 
+# ── 抓股價（上市/上櫃自動判斷）──────────────────────────
 def get_price(stock_id):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    # 嘗試上市（.TW）和上櫃（.TWO）
     for suffix, market in [(".TW", "上市"), (".TWO", "上櫃")]:
         try:
             result = fetch_yahoo(f"{stock_id}{suffix}")
@@ -55,6 +67,18 @@ def get_price(stock_id):
                 return result
         except Exception as e:
             print(f"[{suffix}] {stock_id} error: {e}")
+    return None
+
+# ── 抓期貨/指數行情 ───────────────────────────────────
+def get_futures(symbol, label):
+    try:
+        result = fetch_yahoo(symbol)
+        if result:
+            result["id"] = label
+            result["market"] = "期貨/指數"
+            return result
+    except Exception as e:
+        print(f"[futures] {symbol} error: {e}")
     return None
 
 def is_trading():
@@ -99,6 +123,16 @@ def push(msg):
             PushMessageRequest(to=MY_ID, messages=[TextMessage(text=msg)])
         )
 
+# ── 格式化行情訊息 ────────────────────────────────────
+def format_quote(s):
+    arrow = "🔺" if s["pct"] > 0 else "🔻"
+    return (
+        f"{arrow} {s['id']} {s['name']} ({s.get('market','')})\n"
+        f"現價：{s['price']:,}\n"
+        f"漲跌：{s['change']:+.2f} ({s['pct']:+.2f}%)\n"
+        f"時間：{s.get('source','')}"
+    )
+
 # ── LINE Webhook ──────────────────────────────────────
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -112,7 +146,16 @@ def callback():
 def handle_msg(event):
     text = event.message.text.strip()
 
-    if text == "報告":
+    # 特殊關鍵字（台指期、黃金等）
+    if text in SPECIAL:
+        symbol = SPECIAL[text]
+        s = get_futures(symbol, text)
+        if s:
+            reply(event, format_quote(s))
+        else:
+            reply(event, f"無法取得 {text} 資料")
+
+    elif text == "報告":
         lines = ["📊 自選股行情\n"]
         for sid in watchlist:
             s = get_price(sid)
@@ -128,16 +171,10 @@ def handle_msg(event):
     elif text == "網頁":
         reply(event, f"📈 台股追蹤網頁\n{NETLIFY_URL}")
 
-    elif text.isdigit() and len(text) in [4, 5, 6]:
+    elif len(text) >= 4 and len(text) <= 7 and text[0].isdigit() and text.replace("-","").isalnum():
         s = get_price(text)
         if s:
-            arrow = "🔺" if s["pct"] > 0 else "🔻"
-            reply(event,
-                f"{arrow} {s['id']} {s['name']} ({s.get('market','')})\n"
-                f"現價：{s['price']}\n"
-                f"漲跌：{s['change']:+.2f} ({s['pct']:+.2f}%)\n"
-                f"時間：{s.get('source','')}"
-            )
+            reply(event, format_quote(s))
         else:
             reply(event, f"找不到 {text}，請確認代號正確")
 
@@ -154,8 +191,15 @@ def handle_msg(event):
         reply(event,
             "📋 指令說明\n"
             "──────────\n"
-            "• 2330 → 查詢上市股價\n"
-            "• 009816 → 查詢上櫃股價\n"
+            "【股票】\n"
+            "• 2330 → 上市股票\n"
+            "• 009816 → 上櫃股票\n"
+            "• 00992A → ETF特別股\n\n"
+            "【期貨/指數】\n"
+            "• 台指期 / 小台\n"
+            "• 那斯達克 / 道瓊 / 標普\n"
+            "• 費半 / 黃金 / 原油\n\n"
+            "【其他】\n"
             "• 報告 → 自選股行情\n"
             "• 網頁 → 開啟追蹤網頁\n"
             "• 警示 2330 5 → 漲跌超過5%通知\n"
@@ -164,9 +208,8 @@ def handle_msg(event):
 
     else:
         reply(event,
-            "輸入股票代號查詢，例如：\n"
-            "• 2330（上市）\n"
-            "• 009816（上櫃）\n"
+            "輸入股票代號或關鍵字查詢\n"
+            "例如：2330、台指期、黃金\n"
             "或輸入「指令」查看所有功能"
         )
 
